@@ -241,6 +241,8 @@ extern crate ring;
 extern crate ldap3;
 #[cfg(feature = "ldap_authenticator")]
 extern crate strfmt;
+#[cfg(feature = "mysql_authenticator")]
+extern crate mysql;
 
 #[cfg(test)]
 extern crate serde_test;
