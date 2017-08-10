@@ -9,8 +9,8 @@ use jwt::jwa::{self, SecureRandom};
 use ring::test;
 use ring::constant_time::verify_slices_are_equal;
 
-use {Error, JsonValue, JsonMap};
-use super::{Basic, AuthenticationResult};
+use {Error, JsonMap, JsonValue};
+use super::{AuthenticationResult, Basic};
 
 // Code for conversion to hex stolen from rustc-serialize:
 // https://doc.rust-lang.org/rustc-serialize/src/rustc_serialize/hex.rs.html
@@ -21,7 +21,7 @@ pub type Users = HashMap<String, (Vec<u8>, Vec<u8>)>;
 
 /// MySql user record
 #[derive(Debug, PartialEq, Eq)]
-struct UserRecord{
+struct UserRecord {
     username: Option<String>,
     pw_hash: Option<String>,
     salt: Option<String>,
@@ -48,46 +48,62 @@ impl MySqlAuthenticator {
     /// Create a new `MySqlAuthenticator` with the provided database credentials
     ///
     pub fn new(pool: my::Pool) -> Result<Self, Error> {
-        Ok(MySqlAuthenticator { users: Self::users_from_db(pool)? })
+        Ok(MySqlAuthenticator {
+            users: Self::users_from_db(pool)?,
+        })
     }
 
     /// Create a new `MySqlAuthenticator` with a database config
     ///
     pub fn with_configuration(host: &str, port: u16, database: &str, user: &str, pass: &str) -> Result<Self, Error> {
-        let pool = my::Pool::new(format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, database)).unwrap();
+        let pool = my::Pool::new(format!(
+            "mysql://{}:{}@{}:{}/{}",
+            user,
+            pass,
+            host,
+            port,
+            database
+        )).unwrap();
         Self::new(pool)
     }
 
     fn users_from_db(pool: my::Pool) -> Result<Users, Error> {
         // Parse the records, and look for errors
-        let selected_users: Vec<UserRecord> =
-            pool.prep_exec("SELECT username, pw_hash, salt from auth_users", ())
+        let selected_users: Vec<UserRecord> = pool.prep_exec("SELECT username, pw_hash, salt from auth_users", ())
             .map(|result| {
-                result.map(|x| x.unwrap()).map(|row| {
-                    let (username, pw_hash, salt) = my::from_row(row);
-                    UserRecord{
-                        username: username,
-                        pw_hash: pw_hash,
-                        salt: salt,
-                    }
-                }).collect()
-            }).unwrap();
+                result
+                    .map(|x| x.unwrap())
+                    .map(|row| {
+                        let (username, pw_hash, salt) = my::from_row(row);
+                        UserRecord {
+                            username: username,
+                            pw_hash: pw_hash,
+                            salt: salt,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap();
 
         type ParsedRecordBytes = Vec<Result<(String, Vec<u8>, Vec<u8>), String>>;
         // Decode the hex values from users
         let (users, errors): (ParsedRecordBytes, ParsedRecordBytes) = selected_users
             .into_iter()
             .map(|r| {
-                let UserRecord{username, pw_hash, salt} = r;
+                let UserRecord {
+                    username,
+                    pw_hash,
+                    salt,
+                } = r;
 
-                let user_string = username.unwrap();
+                let user_string = try!(username.ok_or("Username invalid!".to_owned()));
                 let salt_bytes = match salt {
                     Some(s) => test::from_hex(&s)?,
-                    None    => "_".as_bytes().to_vec(),
+                    None => return Err("Invalid salt".to_owned()),
                 };
                 let hash_bytes = match pw_hash {
                     Some(s) => test::from_hex(&s)?,
-                    None    => "_".as_bytes().to_vec(),
+                    None => return Err("Invalid hash".to_owned()),
                 };
                 Ok((user_string, hash_bytes, salt_bytes))
             })
@@ -213,7 +229,7 @@ pub struct MySqlAuthenticatorConfiguration {
     /// MySql user
     pub user: String,
     /// MySql password
-    pub password: String
+    pub password: String,
 }
 
 fn default_port() -> u16 {
@@ -270,11 +286,11 @@ mod tests {
 
     fn make_authenticator() -> MySqlAuthenticator {
         not_err!(MySqlAuthenticator::with_configuration(
-                "localhost",
-                3306,
-                "rowdy",
-                "root",
-                "",
+            "localhost",
+            3306,
+            "rowdy",
+            "root",
+            "",
         ))
     }
 
@@ -332,9 +348,7 @@ mod tests {
         let result = not_err!(authenticator.verify("foobar", "password", true));
         assert!(result.refresh_payload.is_some()); // refresh refresh_payload is provided when requested
 
-        let result = not_err!(authenticator.authenticate_refresh_token(
-            result.refresh_payload.as_ref().unwrap(),
-        ));
+        let result = not_err!(authenticator.authenticate_refresh_token(result.refresh_payload.as_ref().unwrap()));
         assert!(result.refresh_payload.is_none());
     }
 
@@ -357,7 +371,7 @@ mod tests {
             port: 3306,
             database: "rowdy".to_string(),
             user: "root".to_string(),
-            password: "".to_string()
+            password: "".to_string(),
         };
         assert_eq!(deserialized, expected_config);
 
