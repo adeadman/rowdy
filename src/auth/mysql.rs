@@ -1,4 +1,4 @@
-//! MySQL authenticator module
+//! MySql authenticator module
 use std::collections::HashMap;
 
 use argon2rs;
@@ -19,7 +19,7 @@ use super::{Basic, AuthenticationResult};
 /// are a tuple of the password hash and salt.
 pub type Users = HashMap<String, (Vec<u8>, Vec<u8>)>;
 
-/// MySQL user record
+/// MySql user record
 #[derive(Debug, PartialEq, Eq)]
 struct UserRecord{
     username: Option<String>,
@@ -27,31 +27,31 @@ struct UserRecord{
     salt: Option<String>,
 }
 
-/// A simple authenticator that uses a MySQL backed user database.
+/// A simple authenticator that uses a MySql backed user database.
 ///
 /// Requires the `mysql_authenticator` feature, which is enabled by default.
 ///
-/// The user database should be a MySQL database with a table of the following format:
+/// The user database should be a MySql database with a table of the following format:
 /// username(VARCHAR(255)), pw_hash(VARCHAR(255)), salt(VARCHAR(255))
 ///
 /// # Password Hashing
-/// See `MySQLAuthenticator::hash_password` for the implementation of password hashing.
+/// See `MySqlAuthenticator::hash_password` for the implementation of password hashing.
 /// The password is hashed using the [`argon2i`](https://github.com/p-h-c/phc-winner-argon2) algorithm with
 /// a randomly generated salt.
-pub struct MySQLAuthenticator {
+pub struct MySqlAuthenticator {
     users: Users,
 }
 
 static CHARS: &'static [u8] = b"0123456789abcdef";
 
-impl MySQLAuthenticator {
-    /// Create a new `MySQLAuthenticator` with the provided database credentials
+impl MySqlAuthenticator {
+    /// Create a new `MySqlAuthenticator` with the provided database credentials
     ///
     pub fn new(pool: my::Pool) -> Result<Self, Error> {
-        Ok(MySQLAuthenticator { users: Self::users_from_db(pool)? })
+        Ok(MySqlAuthenticator { users: Self::users_from_db(pool)? })
     }
 
-    /// Create a new `MySQLAuthenticator` with a database config
+    /// Create a new `MySqlAuthenticator` with a database config
     ///
     pub fn with_configuration(host: &str, port: u16, database: &str, user: &str, pass: &str) -> Result<Self, Error> {
         let pool = my::Pool::new(format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, database)).unwrap();
@@ -160,7 +160,7 @@ impl MySQLAuthenticator {
     }
 }
 
-impl super::Authenticator<Basic> for MySQLAuthenticator {
+impl super::Authenticator<Basic> for MySqlAuthenticator {
     fn authenticate(
         &self,
         authorization: &super::Authorization<Basic>,
@@ -189,7 +189,7 @@ impl super::Authenticator<Basic> for MySQLAuthenticator {
     }
 }
 
-/// (De)Serializable configuration for `MySQLAuthenticator`. This struct should be included
+/// (De)Serializable configuration for `MySqlAuthenticator`. This struct should be included
 /// in the base `Configuration`.
 /// # Examples
 /// ```json
@@ -202,17 +202,17 @@ impl super::Authenticator<Basic> for MySQLAuthenticator {
 /// }
 /// ```
 #[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
-pub struct MySQLAuthenticatorConfiguration {
-    /// Host for the MySQL database manager - domain name or IP
+pub struct MySqlAuthenticatorConfiguration {
+    /// Host for the MySql database manager - domain name or IP
     pub host: String,
-    /// MySQL database port - default 3306
+    /// MySql database port - default 3306
     #[serde(default = "default_port")]
     pub port: u16,
-    /// MySQL database
+    /// MySql database
     pub database: String,
-    /// MySQL user
+    /// MySql user
     pub user: String,
-    /// MySQL password
+    /// MySql password
     pub password: String
 }
 
@@ -220,11 +220,11 @@ fn default_port() -> u16 {
     3306
 }
 
-impl super::AuthenticatorConfiguration<Basic> for MySQLAuthenticatorConfiguration {
-    type Authenticator = MySQLAuthenticator;
+impl super::AuthenticatorConfiguration<Basic> for MySqlAuthenticatorConfiguration {
+    type Authenticator = MySqlAuthenticator;
 
     fn make_authenticator(&self) -> Result<Self::Authenticator, ::Error> {
-        Ok(MySQLAuthenticator::with_configuration(
+        Ok(MySqlAuthenticator::with_configuration(
             &self.host,
             self.port,
             &self.database,
@@ -240,7 +240,7 @@ pub fn hash_passwords(users: &HashMap<String, String>, salt_len: usize) -> Resul
     let mut hashed: Users = HashMap::new();
     for (user, password) in users {
         let salt = generate_salt(salt_len)?;
-        let hash = MySQLAuthenticator::hash_password_digest(password, &salt)?;
+        let hash = MySqlAuthenticator::hash_password_digest(password, &salt)?;
         let _ = hashed.insert(user.to_string(), (hash, salt));
     }
     Ok(hashed)
@@ -268,8 +268,8 @@ mod tests {
     use auth::Authenticator;
     use super::*;
 
-    fn make_authenticator() -> MySQLAuthenticator {
-        not_err!(MySQLAuthenticator::with_configuration(
+    fn make_authenticator() -> MySqlAuthenticator {
+        not_err!(MySqlAuthenticator::with_configuration(
                 "localhost",
                 3306,
                 "rowdy",
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn hashing_is_done_correctly() {
-        let hashed_password = not_err!(MySQLAuthenticator::hash_password("password", &[0; 32]));
+        let hashed_password = not_err!(MySqlAuthenticator::hash_password("password", &[0; 32]));
         assert_eq!(
             "e6e1111452a5574d8d64f6f4ba6fabc86af5c45c341df1eb23026373c41d24b8",
             hashed_password
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn hashing_is_done_correctly_for_unicode() {
-        let hashed_password = not_err!(MySQLAuthenticator::hash_password(
+        let hashed_password = not_err!(MySqlAuthenticator::hash_password(
             "冻住，不许走!",
             &[0; 32],
         ));
@@ -351,8 +351,8 @@ mod tests {
             "password": ""
         }"#;
 
-        let deserialized: MySQLAuthenticatorConfiguration = not_err!(serde_json::from_str(json));
-        let expected_config = MySQLAuthenticatorConfiguration {
+        let deserialized: MySqlAuthenticatorConfiguration = not_err!(serde_json::from_str(json));
+        let expected_config = MySqlAuthenticatorConfiguration {
             host: "localhost".to_string(),
             port: 3306,
             database: "rowdy".to_string(),

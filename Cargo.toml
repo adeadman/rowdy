@@ -28,7 +28,7 @@ default = ["simple_authenticator"]
 simple_authenticator = ["argon2rs", "csv", "ring"]
 # LDAP based authenticator
 ldap_authenticator = ["ldap3", "strfmt"]
-# MySQL database based authenticator
+# MySql database based authenticator
 mysql_authenticator = ["argon2rs", "mysql", "ring"]
 
 [dependencies]

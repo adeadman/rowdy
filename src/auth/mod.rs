@@ -32,7 +32,7 @@ pub use self::ldap::LdapAuthenticator;
 #[cfg(feature = "mysql_authenticator")]
 pub mod mysql;
 #[cfg(feature = "mysql_authenticator")]
-pub use self::mysql::MySQLAuthenticator;
+pub use self::mysql::MySqlAuthenticator;
 
 use JsonValue;
 
