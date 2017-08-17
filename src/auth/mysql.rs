@@ -1,10 +1,11 @@
+#![allow(unused_qualifications)]
 //! MySql authenticator module
-use std::collections::HashMap;
-
 use argon2rs;
-use mysql as my;
 
-use jwt::jwa::{self, SecureRandom};
+use diesel::prelude::*;
+use diesel::mysql::MysqlConnection;
+use diesel::result::ConnectionError;
+
 // FIXME: Remove dependency on `ring`.
 use ring::test;
 use ring::constant_time::verify_slices_are_equal;
@@ -12,19 +13,22 @@ use ring::constant_time::verify_slices_are_equal;
 use {Error, JsonMap, JsonValue};
 use super::{AuthenticationResult, Basic};
 
+/// Error mapping for `ConnectionError`
+impl From<ConnectionError> for Error {
+    fn from(e: ConnectionError) -> Error {
+        Error::GenericError(e.to_string())
+    }
+}
+
 // Code for conversion to hex stolen from rustc-serialize:
 // https://doc.rust-lang.org/rustc-serialize/src/rustc_serialize/hex.rs.html
 
-/// Typedef for the internal representation of a users database. The keys are the usernames, and the values
-/// are a tuple of the password hash and salt.
-pub type Users = HashMap<String, (Vec<u8>, Vec<u8>)>;
-
 /// MySql user record
-#[derive(Debug, PartialEq, Eq)]
-struct UserRecord {
-    username: Option<String>,
-    pw_hash: Option<String>,
-    salt: Option<String>,
+#[derive(Queryable)]
+pub struct User {
+    username: String,
+    pw_hash: String,
+    salt: String,
 }
 
 /// A simple authenticator that uses a MySql backed user database.
@@ -39,90 +43,56 @@ struct UserRecord {
 /// The password is hashed using the [`argon2i`](https://github.com/p-h-c/phc-winner-argon2) algorithm with
 /// a randomly generated salt.
 pub struct MySqlAuthenticator {
-    users: Users,
+    database_uri: String
 }
 
 static CHARS: &'static [u8] = b"0123456789abcdef";
 
 impl MySqlAuthenticator {
-    /// Create a new `MySqlAuthenticator` with the provided database credentials
+    /// Create a new `MySqlAuthenticator` with a database connection
     ///
-    pub fn new(pool: my::Pool) -> Result<Self, Error> {
-        Ok(MySqlAuthenticator {
-            users: Self::users_from_db(pool)?,
-        })
+    pub fn new(uri: String) -> Self {
+        MySqlAuthenticator {database_uri: uri}
     }
 
     /// Create a new `MySqlAuthenticator` with a database config
     ///
     pub fn with_configuration(host: &str, port: u16, database: &str, user: &str, pass: &str) -> Result<Self, Error> {
-        let pool = my::Pool::new(format!(
-            "mysql://{}:{}@{}:{}/{}",
-            user,
-            pass,
-            host,
-            port,
-            database
-        )).unwrap();
-        Self::new(pool)
+        let database_uri: String = String::from(
+            format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, database)
+        );
+        let authenticator = MySqlAuthenticator{database_uri};
+        match authenticator.test_connection() {
+            Ok(_) => Ok(authenticator),
+            Err(e) => Err(Error::GenericError(e.to_string())),
+        }
     }
 
-    fn users_from_db(pool: my::Pool) -> Result<Users, Error> {
-        // Parse the records, and look for errors
-        let selected_users: Vec<UserRecord> = pool.prep_exec("SELECT username, pw_hash, salt from auth_users", ())
-            .map(|result| {
-                result
-                    .map(|x| x.unwrap())
-                    .map(|row| {
-                        let (username, pw_hash, salt) = my::from_row(row);
-                        UserRecord {
-                            username: username,
-                            pw_hash: pw_hash,
-                            salt: salt,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap();
+    fn test_connection(&self) -> Result<&'static str, Error> {
+        let _ = self.connect()?;
+        Ok("Connection successful")
+    }
 
-        type ParsedRecordBytes = Vec<Result<(String, Vec<u8>, Vec<u8>), String>>;
-        // Decode the hex values from users
-        let (users, errors): (ParsedRecordBytes, ParsedRecordBytes) = selected_users
-            .into_iter()
-            .map(|r| {
-                let UserRecord {
-                    username,
-                    pw_hash,
-                    salt,
-                } = r;
+    /// Connects to MySql Server
+    fn connect(&self) -> Result<MysqlConnection, Error> {
+        debug_!("Connecting to Mysql server");
+        let connection = MysqlConnection::establish(&self.database_uri)?;
+        Ok(connection)
+    }
 
-                let user_string = try!(username.ok_or("Username invalid!".to_owned()));
-                let salt_bytes = match salt {
-                    Some(s) => test::from_hex(&s)?,
-                    None => return Err("Invalid salt".to_owned()),
-                };
-                let hash_bytes = match pw_hash {
-                    Some(s) => test::from_hex(&s)?,
-                    None => return Err("Invalid hash".to_owned()),
-                };
-                Ok((user_string, hash_bytes, salt_bytes))
-            })
-            .partition(Result::is_ok);
-
-        if !errors.is_empty() {
-            let errors: Vec<String> = errors.into_iter().map(|r| r.unwrap_err()).collect();
-            Err(errors.join("; "))?;
-        }
-
-        let users: Users = users
-            .into_iter()
-            .map(|r| {
-                let (username, hash, salt) = r.unwrap(); // safe to unwrap
-                (username, (hash, salt))
-            })
-            .collect();
-
-        Ok(users)
+    /// Search for the specified user entry
+    fn search(
+        &self,
+        connection: &MysqlConnection,
+        search_user: &str
+    ) -> Result<Vec<User>, Error> {
+        use super::schema::users::dsl::*;
+        let results = users.filter(username.eq(search_user))
+            .load::<User>(connection)
+            .map_err(|e| Error::GenericError(
+                    format!("Database query failed: {}", e)
+            ))?;
+        Ok(results)
     }
 
     /// Hash a password with the salt. See struct level documentation for the algorithm used.
@@ -141,29 +111,41 @@ impl MySqlAuthenticator {
         password: &str,
         include_refresh_payload: bool,
     ) -> Result<AuthenticationResult, Error> {
-        match self.users.get(username) {
-            None => Err(Error::Auth(super::Error::AuthenticationFailure)),
-            Some(&(ref hash, ref salt)) => {
-                let actual_password_digest = Self::hash_password_digest(password, salt)?;
-                if !verify_slices_are_equal(actual_password_digest.as_ref(), &*hash).is_ok() {
-                    Err(Error::Auth(super::Error::AuthenticationFailure))
-                } else {
-                    let refresh_payload = if include_refresh_payload {
-                        let mut map = JsonMap::with_capacity(2);
-                        let _ = map.insert("user".to_string(), From::from(username));
-                        let _ = map.insert("password".to_string(), From::from(password));
-                        Some(JsonValue::Object(map))
-                    } else {
-                        None
-                    };
-
-                    Ok(AuthenticationResult {
-                        subject: username.to_string(),
-                        private_claims: JsonValue::Object(JsonMap::new()),
-                        refresh_payload,
-                    })
-                }
+        let user = {
+            let connection = self.connect()?;
+            let mut user = self.search(&connection, username).map_err(|_e| {
+                super::Error::AuthenticationFailure
+            })?;
+            if user.len() != 1 {
+                Err(super::Error::AuthenticationFailure)?;
             }
+
+            user.pop().unwrap() // safe to unwrap
+        };
+        if username != user.username {
+            return Err(Error::Auth(super::Error::AuthenticationFailure));
+        }
+        let hash = test::from_hex(&user.pw_hash)?;
+        let salt = test::from_hex(&user.salt)?;
+
+        let actual_password_digest = Self::hash_password_digest(password, &salt)?;
+        if !verify_slices_are_equal(actual_password_digest.as_ref(), &*hash).is_ok() {
+            Err(Error::Auth(super::Error::AuthenticationFailure))
+        } else {
+            let refresh_payload = if include_refresh_payload {
+                let mut map = JsonMap::with_capacity(2);
+                let _ = map.insert("user".to_string(), From::from(username));
+                let _ = map.insert("password".to_string(), From::from(password));
+                Some(JsonValue::Object(map))
+            } else {
+                None
+            };
+
+            Ok(AuthenticationResult {
+                subject: username.to_string(),
+                private_claims: JsonValue::Object(JsonMap::new()),
+                refresh_payload,
+            })
         }
     }
 
@@ -252,6 +234,7 @@ impl super::AuthenticatorConfiguration<Basic> for MySqlAuthenticatorConfiguratio
 
 /// Convenience function to hash passwords from some users and provided passwords
 /// The salt length must be between 8 and 2^32 - 1 bytes.
+/*
 pub fn hash_passwords(users: &HashMap<String, String>, salt_len: usize) -> Result<Users, Error> {
     let mut hashed: Users = HashMap::new();
     for (user, password) in users {
@@ -261,13 +244,16 @@ pub fn hash_passwords(users: &HashMap<String, String>, salt_len: usize) -> Resul
     }
     Ok(hashed)
 }
+*/
 
 /// Generate a new random salt based on the configured salt length
+/*
 pub fn generate_salt(salt_length: usize) -> Result<Vec<u8>, Error> {
     let mut salt: Vec<u8> = vec![0; salt_length];
     jwa::rng().fill(&mut salt).map_err(|e| e.to_string())?;
     Ok(salt)
 }
+*/
 
 fn hex_dump(bytes: &[u8]) -> String {
     let mut v = Vec::with_capacity(bytes.len() * 2);
@@ -330,10 +316,6 @@ mod tests {
     #[test]
     fn authentication_with_username_and_password() {
         let authenticator = make_authenticator();
-        let expected_keys = vec!["foobar".to_string(), "mei".to_string()];
-        let mut actual_keys: Vec<String> = authenticator.users.keys().cloned().collect();
-        actual_keys.sort();
-        assert_eq!(expected_keys, actual_keys);
 
         let _ = not_err!(authenticator.verify("foobar", "password", false));
 

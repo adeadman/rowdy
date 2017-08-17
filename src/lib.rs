@@ -242,7 +242,9 @@ extern crate ldap3;
 #[cfg(feature = "ldap_authenticator")]
 extern crate strfmt;
 #[cfg(feature = "mysql_authenticator")]
-extern crate mysql;
+#[macro_use] extern crate diesel;
+#[cfg(feature = "mysql_authenticator")]
+#[macro_use] extern crate diesel_codegen;
 
 #[cfg(test)]
 extern crate serde_test;
