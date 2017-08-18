@@ -6,6 +6,8 @@ use diesel::prelude::*;
 use diesel::mysql::MysqlConnection;
 use diesel::result::ConnectionError;
 
+use serde_json::value;
+
 // FIXME: Remove dependency on `ring`.
 use ring::test;
 use ring::constant_time::verify_slices_are_equal;
@@ -21,7 +23,7 @@ impl From<ConnectionError> for Error {
 }
 
 /// MySql user record
-#[derive(Queryable)]
+#[derive(Queryable, Serialize, Deserialize)]
 pub struct User {
     username: String,
     pw_hash: String,
@@ -97,6 +99,50 @@ impl MySqlAuthenticator {
         ))
     }
 
+    /// Serialize a user as payload for a refresh token
+    fn serialize_refresh_token_payload(user: &User) -> Result<JsonValue, Error> {
+        let user = value::to_value(user).map_err(
+            |_| super::Error::AuthenticationFailure,
+        )?;
+        let mut map = JsonMap::with_capacity(1);
+        let _ = map.insert("user".to_string(), user);
+        Ok(JsonValue::Object(map))
+    }
+
+    /// Deserialize a user from a refresh token payload
+    fn deserialize_refresh_token_payload(refresh_payload: JsonValue) -> Result<User, Error> {
+        match refresh_payload {
+            JsonValue::Object(ref map) => {
+                let user = map.get("user").ok_or_else(|| {
+                    Error::Auth(super::Error::AuthenticationFailure)
+                })?;
+                // TODO verify the user object matches the database
+                Ok(value::from_value(user.clone()).map_err(|_| {
+                    super::Error::AuthenticationFailure
+                })?)
+            }
+            _ => Err(Error::Auth(super::Error::AuthenticationFailure)),
+        }
+    }
+
+    /// Build an `AuthenticationResult` for a `User`
+    fn build_authentication_result(user: &User, include_refresh_payload: bool) -> Result<AuthenticationResult, Error> {
+        let refresh_payload = if include_refresh_payload {
+            Some(Self::serialize_refresh_token_payload(user)?)
+        } else {
+            None
+        };
+
+        // TODO implement private claims in DB
+        let private_claims = JsonValue::Object(JsonMap::new());
+
+        Ok(AuthenticationResult {
+            subject: user.username.clone(),
+            private_claims,
+            refresh_payload,
+        })
+    }
+
     /// Verify that some user with the provided password exists in the database, and the password is correct.
     /// Returns the payload to be included in a refresh token if successful
     pub fn verify(
@@ -115,9 +161,7 @@ impl MySqlAuthenticator {
 
             user.pop().unwrap() // safe to unwrap
         };
-        if username != user.username {
-            return Err(Error::Auth(super::Error::AuthenticationFailure));
-        }
+        assert_eq!(username, user.username);
         let hash = test::from_hex(&user.pw_hash)?;
         let salt = test::from_hex(&user.salt)?;
 
@@ -125,20 +169,10 @@ impl MySqlAuthenticator {
         if !verify_slices_are_equal(actual_password_digest.as_ref(), &*hash).is_ok() {
             Err(Error::Auth(super::Error::AuthenticationFailure))
         } else {
-            let refresh_payload = if include_refresh_payload {
-                let mut map = JsonMap::with_capacity(2);
-                let _ = map.insert("user".to_string(), From::from(username));
-                let _ = map.insert("password".to_string(), From::from(password));
-                Some(JsonValue::Object(map))
-            } else {
-                None
-            };
-
-            Ok(AuthenticationResult {
-                subject: username.to_string(),
-                private_claims: JsonValue::Object(JsonMap::new()),
-                refresh_payload,
-            })
+            Self::build_authentication_result(
+                &user,
+                include_refresh_payload,
+            )
         }
     }
 
@@ -163,20 +197,11 @@ impl super::Authenticator<Basic> for MySqlAuthenticator {
     }
 
     fn authenticate_refresh_token(&self, refresh_payload: &JsonValue) -> Result<AuthenticationResult, ::Error> {
-        match *refresh_payload {
-            JsonValue::Object(ref map) => {
-                let user = map.get("user")
-                    .ok_or_else(|| super::Error::AuthenticationFailure)?
-                    .as_str()
-                    .ok_or_else(|| super::Error::AuthenticationFailure)?;
-                let password = map.get("password")
-                    .ok_or_else(|| super::Error::AuthenticationFailure)?
-                    .as_str()
-                    .ok_or_else(|| super::Error::AuthenticationFailure)?;
-                self.verify(user, password, false)
-            }
-            _ => Err(super::Error::AuthenticationFailure)?,
-        }
+        let user = Self::deserialize_refresh_token_payload(refresh_payload.clone())?;
+        Self::build_authentication_result(
+            &user,
+            false,
+        )
     }
 }
 
