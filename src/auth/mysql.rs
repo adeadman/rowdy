@@ -20,9 +20,6 @@ impl From<ConnectionError> for Error {
     }
 }
 
-// Code for conversion to hex stolen from rustc-serialize:
-// https://doc.rust-lang.org/rustc-serialize/src/rustc_serialize/hex.rs.html
-
 /// MySql user record
 #[derive(Queryable)]
 pub struct User {
@@ -33,7 +30,7 @@ pub struct User {
 
 /// A simple authenticator that uses a MySql backed user database.
 ///
-/// Requires the `mysql_authenticator` feature, which is enabled by default.
+/// Requires the `mysql_authenticator` feature
 ///
 /// The user database should be a MySql database with a table of the following format:
 /// username(VARCHAR(255)), pw_hash(VARCHAR(255)), salt(VARCHAR(255))
@@ -43,7 +40,7 @@ pub struct User {
 /// The password is hashed using the [`argon2i`](https://github.com/p-h-c/phc-winner-argon2) algorithm with
 /// a randomly generated salt.
 pub struct MySqlAuthenticator {
-    database_uri: String
+    database_uri: String,
 }
 
 static CHARS: &'static [u8] = b"0123456789abcdef";
@@ -52,7 +49,7 @@ impl MySqlAuthenticator {
     /// Create a new `MySqlAuthenticator` with a database connection
     ///
     pub fn new(uri: String) -> Self {
-        MySqlAuthenticator {database_uri: uri}
+        MySqlAuthenticator { database_uri: uri }
     }
 
     /// Create a new `MySqlAuthenticator` with a database config
@@ -61,7 +58,7 @@ impl MySqlAuthenticator {
         let database_uri: String = String::from(
             format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, database)
         );
-        let authenticator = MySqlAuthenticator{database_uri};
+        let authenticator = MySqlAuthenticator{ database_uri };
         match authenticator.test_connection() {
             Ok(_) => Ok(authenticator),
             Err(e) => Err(Error::GenericError(e.to_string())),
@@ -81,17 +78,14 @@ impl MySqlAuthenticator {
     }
 
     /// Search for the specified user entry
-    fn search(
-        &self,
-        connection: &MysqlConnection,
-        search_user: &str
-    ) -> Result<Vec<User>, Error> {
+    fn search(&self, connection: &MysqlConnection, search_user: &str) -> Result<Vec<User>, Error> {
         use super::schema::users::dsl::*;
-        let results = users.filter(username.eq(search_user))
+        let results = users
+            .filter(username.eq(search_user))
             .load::<User>(connection)
-            .map_err(|e| Error::GenericError(
-                    format!("Database query failed: {}", e)
-            ))?;
+            .map_err(|e| {
+                Error::GenericError(format!("Database query failed: {}", e))
+            })?;
         Ok(results)
     }
 
@@ -103,7 +97,7 @@ impl MySqlAuthenticator {
         ))
     }
 
-    /// Verify that some user with the provided password exists in the CSV database, and the password is correct.
+    /// Verify that some user with the provided password exists in the database, and the password is correct.
     /// Returns the payload to be included in a refresh token if successful
     pub fn verify(
         &self,
@@ -113,9 +107,8 @@ impl MySqlAuthenticator {
     ) -> Result<AuthenticationResult, Error> {
         let user = {
             let connection = self.connect()?;
-            let mut user = self.search(&connection, username).map_err(|_e| {
-                super::Error::AuthenticationFailure
-            })?;
+            let mut user = self.search(&connection, username)
+                .map_err(|_e| super::Error::AuthenticationFailure)?;
             if user.len() != 1 {
                 Err(super::Error::AuthenticationFailure)?;
             }
@@ -231,29 +224,6 @@ impl super::AuthenticatorConfiguration<Basic> for MySqlAuthenticatorConfiguratio
         )?)
     }
 }
-
-/// Convenience function to hash passwords from some users and provided passwords
-/// The salt length must be between 8 and 2^32 - 1 bytes.
-/*
-pub fn hash_passwords(users: &HashMap<String, String>, salt_len: usize) -> Result<Users, Error> {
-    let mut hashed: Users = HashMap::new();
-    for (user, password) in users {
-        let salt = generate_salt(salt_len)?;
-        let hash = MySqlAuthenticator::hash_password_digest(password, &salt)?;
-        let _ = hashed.insert(user.to_string(), (hash, salt));
-    }
-    Ok(hashed)
-}
-*/
-
-/// Generate a new random salt based on the configured salt length
-/*
-pub fn generate_salt(salt_length: usize) -> Result<Vec<u8>, Error> {
-    let mut salt: Vec<u8> = vec![0; salt_length];
-    jwa::rng().fill(&mut salt).map_err(|e| e.to_string())?;
-    Ok(salt)
-}
-*/
 
 fn hex_dump(bytes: &[u8]) -> String {
     let mut v = Vec::with_capacity(bytes.len() * 2);
