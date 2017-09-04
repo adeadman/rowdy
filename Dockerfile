@@ -15,6 +15,7 @@ RUN set -x \
                                           file \
                                           libssl-dev \
                                           pkg-config \
+                                          libmysqlclient-dev \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION} \
     && rustup target add "${ARCHITECTURE}" \
     && apt-get remove -y --auto-remove curl \
